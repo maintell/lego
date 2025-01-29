@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/go-acme/lego/v4/challenge"
 	"github.com/go-acme/lego/v4/challenge/dns01"
 	"github.com/go-acme/lego/v4/log"
 	"github.com/go-acme/lego/v4/platform/config/env"
@@ -27,6 +28,8 @@ const (
 	EnvPollingInterval    = envNamespace + "POLLING_INTERVAL"
 )
 
+var _ challenge.ProviderTimeout = (*DNSProvider)(nil)
+
 // Config is used to configure the creation of the DNSProvider.
 type Config struct {
 	Username           string
@@ -43,7 +46,7 @@ func NewDefaultConfig() *Config {
 	return &Config{
 		TTL: env.GetOrDefaultInt(EnvTTL, 300),
 		// INWX has rather unstable propagation delays, thus using a larger default value
-		PropagationTimeout: env.GetOrDefaultSecond(EnvPropagationTimeout, 360*time.Second),
+		PropagationTimeout: env.GetOrDefaultSecond(EnvPropagationTimeout, 6*time.Minute),
 		PollingInterval:    env.GetOrDefaultSecond(EnvPollingInterval, dns01.DefaultPollingInterval),
 		Sandbox:            env.GetOrDefaultBool(EnvSandbox, false),
 	}
@@ -94,14 +97,14 @@ func NewDNSProviderConfig(config *Config) (*DNSProvider, error) {
 
 // Present creates a TXT record using the specified parameters.
 func (d *DNSProvider) Present(domain, token, keyAuth string) error {
-	challengeInfo := dns01.GetChallengeInfo(domain, keyAuth)
+	info := dns01.GetChallengeInfo(domain, keyAuth)
 
-	authZone, err := dns01.FindZoneByFqdn(challengeInfo.EffectiveFQDN)
+	authZone, err := dns01.FindZoneByFqdn(info.EffectiveFQDN)
 	if err != nil {
-		return fmt.Errorf("inwx: could not find zone for domain %q (%s): %w", domain, challengeInfo.EffectiveFQDN, err)
+		return fmt.Errorf("inwx: could not find zone for domain %q (%s): %w", domain, info.EffectiveFQDN, err)
 	}
 
-	info, err := d.client.Account.Login()
+	login, err := d.client.Account.Login()
 	if err != nil {
 		return fmt.Errorf("inwx: %w", err)
 	}
@@ -113,27 +116,24 @@ func (d *DNSProvider) Present(domain, token, keyAuth string) error {
 		}
 	}()
 
-	err = d.twoFactorAuth(info)
+	err = d.twoFactorAuth(login)
 	if err != nil {
 		return fmt.Errorf("inwx: %w", err)
 	}
 
 	request := &goinwx.NameserverRecordRequest{
 		Domain:  dns01.UnFqdn(authZone),
-		Name:    dns01.UnFqdn(challengeInfo.EffectiveFQDN),
+		Name:    dns01.UnFqdn(info.EffectiveFQDN),
 		Type:    "TXT",
-		Content: challengeInfo.Value,
+		Content: info.Value,
 		TTL:     d.config.TTL,
 	}
 
 	_, err = d.client.Nameservers.CreateRecord(request)
 	if err != nil {
 		var er *goinwx.ErrorResponse
-		if errors.As(err, &er) {
-			if er.Message == "Object exists" {
-				return nil
-			}
-			return fmt.Errorf("inwx: %w", err)
+		if errors.As(err, &er) && er.Message == "Object exists" {
+			return nil
 		}
 
 		return fmt.Errorf("inwx: %w", err)
@@ -144,14 +144,14 @@ func (d *DNSProvider) Present(domain, token, keyAuth string) error {
 
 // CleanUp removes the TXT record matching the specified parameters.
 func (d *DNSProvider) CleanUp(domain, token, keyAuth string) error {
-	challengeInfo := dns01.GetChallengeInfo(domain, keyAuth)
+	info := dns01.GetChallengeInfo(domain, keyAuth)
 
-	authZone, err := dns01.FindZoneByFqdn(challengeInfo.EffectiveFQDN)
+	authZone, err := dns01.FindZoneByFqdn(info.EffectiveFQDN)
 	if err != nil {
-		return fmt.Errorf("inwx: could not find zone for domain %q (%s): %w", domain, challengeInfo.EffectiveFQDN, err)
+		return fmt.Errorf("inwx: could not find zone for domain %q (%s): %w", domain, info.EffectiveFQDN, err)
 	}
 
-	info, err := d.client.Account.Login()
+	login, err := d.client.Account.Login()
 	if err != nil {
 		return fmt.Errorf("inwx: %w", err)
 	}
@@ -163,29 +163,40 @@ func (d *DNSProvider) CleanUp(domain, token, keyAuth string) error {
 		}
 	}()
 
-	err = d.twoFactorAuth(info)
+	err = d.twoFactorAuth(login)
 	if err != nil {
 		return fmt.Errorf("inwx: %w", err)
 	}
 
 	response, err := d.client.Nameservers.Info(&goinwx.NameserverInfoRequest{
 		Domain: dns01.UnFqdn(authZone),
-		Name:   dns01.UnFqdn(challengeInfo.EffectiveFQDN),
+		Name:   dns01.UnFqdn(info.EffectiveFQDN),
 		Type:   "TXT",
 	})
 	if err != nil {
 		return fmt.Errorf("inwx: %w", err)
 	}
 
-	var lastErr error
+	var recordID int
 	for _, record := range response.Records {
-		err = d.client.Nameservers.DeleteRecord(record.ID)
-		if err != nil {
-			lastErr = fmt.Errorf("inwx: %w", err)
+		if record.Content != info.Value {
+			continue
 		}
+
+		recordID = record.ID
+		break
 	}
 
-	return lastErr
+	if recordID == 0 {
+		return errors.New("inwx: TXT record not found")
+	}
+
+	err = d.client.Nameservers.DeleteRecord(recordID)
+	if err != nil {
+		return fmt.Errorf("inwx: %w", err)
+	}
+
+	return nil
 }
 
 // Timeout returns the timeout and interval to use when checking for DNS propagation.

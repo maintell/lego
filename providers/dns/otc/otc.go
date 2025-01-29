@@ -5,19 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"time"
 
+	"github.com/go-acme/lego/v4/challenge"
 	"github.com/go-acme/lego/v4/challenge/dns01"
 	"github.com/go-acme/lego/v4/platform/config/env"
 	"github.com/go-acme/lego/v4/providers/dns/otc/internal"
 )
-
-const defaultIdentityEndpoint = "https://iam.eu-de.otc.t-systems.com:443/v3/auth/tokens"
-
-// minTTL 300 is otc minimum value for TTL.
-const minTTL = 300
 
 // Environment variables names.
 const (
@@ -36,6 +31,13 @@ const (
 	EnvSequenceInterval   = envNamespace + "SEQUENCE_INTERVAL"
 )
 
+const defaultIdentityEndpoint = "https://iam.eu-de.otc.t-systems.com:443/v3/auth/tokens"
+
+// minTTL 300 is otc minimum value for TTL.
+const minTTL = 300
+
+var _ challenge.ProviderTimeout = (*DNSProvider)(nil)
+
 // Config is used to configure the creation of the DNSProvider.
 type Config struct {
 	IdentityEndpoint   string
@@ -52,6 +54,16 @@ type Config struct {
 
 // NewDefaultConfig returns a default configuration for the DNSProvider.
 func NewDefaultConfig() *Config {
+	tr := &http.Transport{}
+
+	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+	if ok {
+		tr = defaultTransport.Clone()
+	}
+
+	// Workaround for keep alive bug in otc api
+	tr.DisableKeepAlives = true
+
 	return &Config{
 		TTL:                env.GetOrDefaultInt(EnvTTL, minTTL),
 		PropagationTimeout: env.GetOrDefaultSecond(EnvPropagationTimeout, dns01.DefaultPropagationTimeout),
@@ -59,21 +71,8 @@ func NewDefaultConfig() *Config {
 		IdentityEndpoint:   env.GetOrDefaultString(EnvIdentityEndpoint, defaultIdentityEndpoint),
 		SequenceInterval:   env.GetOrDefaultSecond(EnvSequenceInterval, dns01.DefaultPropagationTimeout),
 		HTTPClient: &http.Client{
-			Timeout: env.GetOrDefaultSecond(EnvHTTPTimeout, 10*time.Second),
-			Transport: &http.Transport{
-				Proxy: http.ProxyFromEnvironment,
-				DialContext: (&net.Dialer{
-					Timeout:   30 * time.Second,
-					KeepAlive: 30 * time.Second,
-				}).DialContext,
-				MaxIdleConns:          100,
-				IdleConnTimeout:       90 * time.Second,
-				TLSHandshakeTimeout:   10 * time.Second,
-				ExpectContinueTimeout: 1 * time.Second,
-
-				// Workaround for keep alive bug in otc api
-				DisableKeepAlives: true,
-			},
+			Timeout:   env.GetOrDefaultSecond(EnvHTTPTimeout, 10*time.Second),
+			Transport: tr,
 		},
 	}
 }

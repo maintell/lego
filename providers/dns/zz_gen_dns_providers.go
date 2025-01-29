@@ -86,9 +86,11 @@ import (
 	"github.com/go-acme/lego/v4/providers/dns/loopia"
 	"github.com/go-acme/lego/v4/providers/dns/luadns"
 	"github.com/go-acme/lego/v4/providers/dns/mailinabox"
+	"github.com/go-acme/lego/v4/providers/dns/manageengine"
 	"github.com/go-acme/lego/v4/providers/dns/metaname"
 	"github.com/go-acme/lego/v4/providers/dns/mijnhost"
 	"github.com/go-acme/lego/v4/providers/dns/mittwald"
+	"github.com/go-acme/lego/v4/providers/dns/myaddr"
 	"github.com/go-acme/lego/v4/providers/dns/mydnsjp"
 	"github.com/go-acme/lego/v4/providers/dns/mythicbeasts"
 	"github.com/go-acme/lego/v4/providers/dns/namecheap"
@@ -109,6 +111,7 @@ import (
 	"github.com/go-acme/lego/v4/providers/dns/plesk"
 	"github.com/go-acme/lego/v4/providers/dns/porkbun"
 	"github.com/go-acme/lego/v4/providers/dns/rackspace"
+	"github.com/go-acme/lego/v4/providers/dns/rainyun"
 	"github.com/go-acme/lego/v4/providers/dns/rcodezero"
 	"github.com/go-acme/lego/v4/providers/dns/regfish"
 	"github.com/go-acme/lego/v4/providers/dns/regru"
@@ -143,6 +146,7 @@ import (
 	"github.com/go-acme/lego/v4/providers/dns/webnames"
 	"github.com/go-acme/lego/v4/providers/dns/websupport"
 	"github.com/go-acme/lego/v4/providers/dns/wedos"
+	"github.com/go-acme/lego/v4/providers/dns/westcn"
 	"github.com/go-acme/lego/v4/providers/dns/yandex"
 	"github.com/go-acme/lego/v4/providers/dns/yandex360"
 	"github.com/go-acme/lego/v4/providers/dns/yandexcloud"
@@ -313,12 +317,16 @@ func NewDNSChallengeProviderByName(name string) (challenge.Provider, error) {
 		return luadns.NewDNSProvider()
 	case "mailinabox":
 		return mailinabox.NewDNSProvider()
+	case "manageengine":
+		return manageengine.NewDNSProvider()
 	case "metaname":
 		return metaname.NewDNSProvider()
 	case "mijnhost":
 		return mijnhost.NewDNSProvider()
 	case "mittwald":
 		return mittwald.NewDNSProvider()
+	case "myaddr":
+		return myaddr.NewDNSProvider()
 	case "mydnsjp":
 		return mydnsjp.NewDNSProvider()
 	case "mythicbeasts":
@@ -359,6 +367,8 @@ func NewDNSChallengeProviderByName(name string) (challenge.Provider, error) {
 		return porkbun.NewDNSProvider()
 	case "rackspace":
 		return rackspace.NewDNSProvider()
+	case "rainyun":
+		return rainyun.NewDNSProvider()
 	case "rcodezero":
 		return rcodezero.NewDNSProvider()
 	case "regfish":
@@ -427,6 +437,8 @@ func NewDNSChallengeProviderByName(name string) (challenge.Provider, error) {
 		return websupport.NewDNSProvider()
 	case "wedos":
 		return wedos.NewDNSProvider()
+	case "westcn":
+		return westcn.NewDNSProvider()
 	case "yandex":
 		return yandex.NewDNSProvider()
 	case "yandex360":

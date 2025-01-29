@@ -21,8 +21,10 @@ const (
 	flgNotBefore                      = "not-before"
 	flgNotAfter                       = "not-after"
 	flgPreferredChain                 = "preferred-chain"
+	flgProfile                        = "profile"
 	flgAlwaysDeactivateAuthorizations = "always-deactivate-authorizations"
 	flgRunHook                        = "run-hook"
+	flgRunHookTimeout                 = "run-hook-timeout"
 )
 
 func createRun() *cli.Command {
@@ -68,12 +70,21 @@ func createRun() *cli.Command {
 					" If no match, the default offered chain will be used.",
 			},
 			&cli.StringFlag{
+				Name:  flgProfile,
+				Usage: "If the CA offers multiple certificate profiles (draft-aaron-acme-profiles), choose this one.",
+			},
+			&cli.StringFlag{
 				Name:  flgAlwaysDeactivateAuthorizations,
 				Usage: "Force the authorizations to be relinquished even if the certificate request was successful.",
 			},
 			&cli.StringFlag{
 				Name:  flgRunHook,
 				Usage: "Define a hook. The hook is executed when the certificates are effectively created.",
+			},
+			&cli.DurationFlag{
+				Name:  flgRunHookTimeout,
+				Usage: "Define the timeout for the hook execution.",
+				Value: 2 * time.Minute,
 			},
 		},
 	}
@@ -93,8 +104,9 @@ backups of this folder is ideal.
 func run(ctx *cli.Context) error {
 	accountsStorage := NewAccountsStorage(ctx)
 
-	account, client := setup(ctx, accountsStorage)
-	setupChallenges(ctx, client)
+	account, keyType := setupAccount(ctx, accountsStorage)
+
+	client := setupClient(ctx, account, keyType)
 
 	if account.Registration == nil {
 		reg, err := register(ctx, client)
@@ -123,12 +135,12 @@ func run(ctx *cli.Context) error {
 	certsStorage.SaveResource(cert)
 
 	meta := map[string]string{
-		renewEnvAccountEmail: account.Email,
+		hookEnvAccountEmail: account.Email,
 	}
 
 	addPathToMetadata(meta, cert.Domain, cert, certsStorage)
 
-	return launchHook(ctx.String(flgRunHook), meta)
+	return launchHook(ctx.String(flgRunHook), ctx.Duration(flgRunHookTimeout), meta)
 }
 
 func handleTOS(ctx *cli.Context, client *lego.Client) bool {
@@ -198,6 +210,7 @@ func obtainCertificate(ctx *cli.Context, client *lego.Client) (*certificate.Reso
 			Bundle:                         bundle,
 			MustStaple:                     ctx.Bool(flgMustStaple),
 			PreferredChain:                 ctx.String(flgPreferredChain),
+			Profile:                        ctx.String(flgProfile),
 			AlwaysDeactivateAuthorizations: ctx.Bool(flgAlwaysDeactivateAuthorizations),
 		}
 
@@ -227,6 +240,7 @@ func obtainCertificate(ctx *cli.Context, client *lego.Client) (*certificate.Reso
 		NotAfter:                       getTime(ctx, flgNotAfter),
 		Bundle:                         bundle,
 		PreferredChain:                 ctx.String(flgPreferredChain),
+		Profile:                        ctx.String(flgProfile),
 		AlwaysDeactivateAuthorizations: ctx.Bool(flgAlwaysDeactivateAuthorizations),
 	}
 

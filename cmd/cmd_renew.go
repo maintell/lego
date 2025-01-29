@@ -25,17 +25,9 @@ const (
 	flgARIWaitToRenewDuration = "ari-wait-to-renew-duration"
 	flgReuseKey               = "reuse-key"
 	flgRenewHook              = "renew-hook"
+	flgRenewHookTimeout       = "renew-hook-timeout"
 	flgNoRandomSleep          = "no-random-sleep"
-)
-
-const (
-	renewEnvAccountEmail      = "LEGO_ACCOUNT_EMAIL"
-	renewEnvCertDomain        = "LEGO_CERT_DOMAIN"
-	renewEnvCertPath          = "LEGO_CERT_PATH"
-	renewEnvCertKeyPath       = "LEGO_CERT_KEY_PATH"
-	renewEnvIssuerCertKeyPath = "LEGO_ISSUER_CERT_PATH"
-	renewEnvCertPEMPath       = "LEGO_CERT_PEM_PATH"
-	renewEnvCertPFXPath       = "LEGO_CERT_PFX_PATH"
+	flgForceCertDomains       = "force-cert-domains"
 )
 
 func createRenew() *cli.Command {
@@ -52,6 +44,9 @@ func createRenew() *cli.Command {
 			}
 			if !hasDomains && !hasCsr {
 				log.Fatal("Please specify --%s/-d (or --%s/-c if you already have a CSR)", flgDomains, flgCSR)
+			}
+			if ctx.Bool(flgForceCertDomains) && hasCsr {
+				log.Fatal("--%s only works with --%s/-d, --%s/-c doesn't support this option.", flgForceCertDomains, flgDomains, flgCSR)
 			}
 			return nil
 		},
@@ -98,6 +93,10 @@ func createRenew() *cli.Command {
 					" If no match, the default offered chain will be used.",
 			},
 			&cli.StringFlag{
+				Name:  flgProfile,
+				Usage: "If the CA offers multiple certificate profiles (draft-aaron-acme-profiles), choose this one.",
+			},
+			&cli.StringFlag{
 				Name:  flgAlwaysDeactivateAuthorizations,
 				Usage: "Force the authorizations to be relinquished even if the certificate request was successful.",
 			},
@@ -105,18 +104,26 @@ func createRenew() *cli.Command {
 				Name:  flgRenewHook,
 				Usage: "Define a hook. The hook is executed only when the certificates are effectively renewed.",
 			},
+			&cli.DurationFlag{
+				Name:  flgRenewHookTimeout,
+				Usage: "Define the timeout for the hook execution.",
+				Value: 2 * time.Minute,
+			},
 			&cli.BoolFlag{
 				Name: flgNoRandomSleep,
 				Usage: "Do not add a random sleep before the renewal." +
 					" We do not recommend using this flag if you are doing your renewals in an automated way.",
+			},
+			&cli.BoolFlag{
+				Name:  flgForceCertDomains,
+				Usage: "Check and ensure that the cert's domain list matches those passed in the domains argument.",
 			},
 		},
 	}
 }
 
 func renew(ctx *cli.Context) error {
-	account, client := setup(ctx, NewAccountsStorage(ctx))
-	setupChallenges(ctx, client)
+	account, keyType := setupAccount(ctx, NewAccountsStorage(ctx))
 
 	if account.Registration == nil {
 		log.Fatalf("Account %s is not registered. Use 'run' to register a new account.\n", account.Email)
@@ -126,18 +133,18 @@ func renew(ctx *cli.Context) error {
 
 	bundle := !ctx.Bool(flgNoBundle)
 
-	meta := map[string]string{renewEnvAccountEmail: account.Email}
+	meta := map[string]string{hookEnvAccountEmail: account.Email}
 
 	// CSR
 	if ctx.IsSet(flgCSR) {
-		return renewForCSR(ctx, client, certsStorage, bundle, meta)
+		return renewForCSR(ctx, account, keyType, certsStorage, bundle, meta)
 	}
 
 	// Domains
-	return renewForDomains(ctx, client, certsStorage, bundle, meta)
+	return renewForDomains(ctx, account, keyType, certsStorage, bundle, meta)
 }
 
-func renewForDomains(ctx *cli.Context, client *lego.Client, certsStorage *CertificatesStorage, bundle bool, meta map[string]string) error {
+func renewForDomains(ctx *cli.Context, account *Account, keyType certcrypto.KeyType, certsStorage *CertificatesStorage, bundle bool, meta map[string]string) error {
 	domains := ctx.StringSlice(flgDomains)
 	domain := domains[0]
 
@@ -154,7 +161,11 @@ func renewForDomains(ctx *cli.Context, client *lego.Client, certsStorage *Certif
 	var ariRenewalTime *time.Time
 	var replacesCertID string
 
+	var client *lego.Client
+
 	if !ctx.Bool(flgARIDisable) {
+		client = setupClient(ctx, account, keyType)
+
 		ariRenewalTime = getARIRenewalTime(ctx, cert, domain, client)
 		if ariRenewalTime != nil {
 			now := time.Now().UTC()
@@ -172,15 +183,22 @@ func renewForDomains(ctx *cli.Context, client *lego.Client, certsStorage *Certif
 		}
 	}
 
-	if ariRenewalTime == nil && !needRenewal(cert, domain, ctx.Int(flgDays)) {
+	forceDomains := ctx.Bool(flgForceCertDomains)
+
+	certDomains := certcrypto.ExtractDomains(cert)
+
+	if ariRenewalTime == nil && !needRenewal(cert, domain, ctx.Int(flgDays)) &&
+		(!forceDomains || slices.Equal(certDomains, domains)) {
 		return nil
+	}
+
+	if client == nil {
+		client = setupClient(ctx, account, keyType)
 	}
 
 	// This is just meant to be informal for the user.
 	timeLeft := cert.NotAfter.Sub(time.Now().UTC())
 	log.Infof("[%s] acme: Trying renewal with %d hours remaining", domain, int(timeLeft.Hours()))
-
-	certDomains := certcrypto.ExtractDomains(cert)
 
 	var privateKey crypto.PrivateKey
 	if ctx.Bool(flgReuseKey) {
@@ -207,14 +225,20 @@ func renewForDomains(ctx *cli.Context, client *lego.Client, certsStorage *Certif
 		time.Sleep(sleepTime)
 	}
 
+	renewalDomains := domains
+	if !forceDomains {
+		renewalDomains = merge(certDomains, domains)
+	}
+
 	request := certificate.ObtainRequest{
-		Domains:                        merge(certDomains, domains),
+		Domains:                        renewalDomains,
 		PrivateKey:                     privateKey,
 		MustStaple:                     ctx.Bool(flgMustStaple),
 		NotBefore:                      getTime(ctx, flgNotBefore),
 		NotAfter:                       getTime(ctx, flgNotAfter),
 		Bundle:                         bundle,
 		PreferredChain:                 ctx.String(flgPreferredChain),
+		Profile:                        ctx.String(flgProfile),
 		AlwaysDeactivateAuthorizations: ctx.Bool(flgAlwaysDeactivateAuthorizations),
 	}
 
@@ -231,10 +255,10 @@ func renewForDomains(ctx *cli.Context, client *lego.Client, certsStorage *Certif
 
 	addPathToMetadata(meta, domain, certRes, certsStorage)
 
-	return launchHook(ctx.String(flgRenewHook), meta)
+	return launchHook(ctx.String(flgRenewHook), ctx.Duration(flgRenewHookTimeout), meta)
 }
 
-func renewForCSR(ctx *cli.Context, client *lego.Client, certsStorage *CertificatesStorage, bundle bool, meta map[string]string) error {
+func renewForCSR(ctx *cli.Context, account *Account, keyType certcrypto.KeyType, certsStorage *CertificatesStorage, bundle bool, meta map[string]string) error {
 	csr, err := readCSRFile(ctx.String(flgCSR))
 	if err != nil {
 		log.Fatal(err)
@@ -258,7 +282,11 @@ func renewForCSR(ctx *cli.Context, client *lego.Client, certsStorage *Certificat
 	var ariRenewalTime *time.Time
 	var replacesCertID string
 
+	var client *lego.Client
+
 	if !ctx.Bool(flgARIDisable) {
+		client = setupClient(ctx, account, keyType)
+
 		ariRenewalTime = getARIRenewalTime(ctx, cert, domain, client)
 		if ariRenewalTime != nil {
 			now := time.Now().UTC()
@@ -280,6 +308,10 @@ func renewForCSR(ctx *cli.Context, client *lego.Client, certsStorage *Certificat
 		return nil
 	}
 
+	if client == nil {
+		client = setupClient(ctx, account, keyType)
+	}
+
 	// This is just meant to be informal for the user.
 	timeLeft := cert.NotAfter.Sub(time.Now().UTC())
 	log.Infof("[%s] acme: Trying renewal with %d hours remaining", domain, int(timeLeft.Hours()))
@@ -290,6 +322,7 @@ func renewForCSR(ctx *cli.Context, client *lego.Client, certsStorage *Certificat
 		NotAfter:                       getTime(ctx, flgNotAfter),
 		Bundle:                         bundle,
 		PreferredChain:                 ctx.String(flgPreferredChain),
+		Profile:                        ctx.String(flgProfile),
 		AlwaysDeactivateAuthorizations: ctx.Bool(flgAlwaysDeactivateAuthorizations),
 	}
 
@@ -306,7 +339,7 @@ func renewForCSR(ctx *cli.Context, client *lego.Client, certsStorage *Certificat
 
 	addPathToMetadata(meta, domain, certRes, certsStorage)
 
-	return launchHook(ctx.String(flgRenewHook), meta)
+	return launchHook(ctx.String(flgRenewHook), ctx.Duration(flgRenewHookTimeout), meta)
 }
 
 func needRenewal(x509Cert *x509.Certificate, domain string, days int) bool {
@@ -356,24 +389,6 @@ func getARIRenewalTime(ctx *cli.Context, cert *x509.Certificate, domain string, 
 	}
 
 	return renewalTime
-}
-
-func addPathToMetadata(meta map[string]string, domain string, certRes *certificate.Resource, certsStorage *CertificatesStorage) {
-	meta[renewEnvCertDomain] = domain
-	meta[renewEnvCertPath] = certsStorage.GetFileName(domain, certExt)
-	meta[renewEnvCertKeyPath] = certsStorage.GetFileName(domain, keyExt)
-
-	if certRes.IssuerCertificate != nil {
-		meta[renewEnvIssuerCertKeyPath] = certsStorage.GetFileName(domain, issuerExt)
-	}
-
-	if certsStorage.pem {
-		meta[renewEnvCertPEMPath] = certsStorage.GetFileName(domain, pemExt)
-	}
-
-	if certsStorage.pfx {
-		meta[renewEnvCertPFXPath] = certsStorage.GetFileName(domain, pfxExt)
-	}
 }
 
 func merge(prevDomains, nextDomains []string) []string {

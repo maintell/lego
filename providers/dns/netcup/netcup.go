@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-acme/lego/v4/challenge"
 	"github.com/go-acme/lego/v4/challenge/dns01"
 	"github.com/go-acme/lego/v4/log"
 	"github.com/go-acme/lego/v4/platform/config/env"
@@ -23,29 +24,34 @@ const (
 	EnvAPIKey         = envNamespace + "API_KEY"
 	EnvAPIPassword    = envNamespace + "API_PASSWORD"
 
-	EnvTTL                = envNamespace + "TTL"
+	// Deprecated: the TTL is not configurable on record.
+	EnvTTL = envNamespace + "TTL"
+
 	EnvPropagationTimeout = envNamespace + "PROPAGATION_TIMEOUT"
 	EnvPollingInterval    = envNamespace + "POLLING_INTERVAL"
 	EnvHTTPTimeout        = envNamespace + "HTTP_TIMEOUT"
 )
+
+var _ challenge.ProviderTimeout = (*DNSProvider)(nil)
 
 // Config is used to configure the creation of the DNSProvider.
 type Config struct {
 	Key                string
 	Password           string
 	Customer           string
-	TTL                int
 	PropagationTimeout time.Duration
 	PollingInterval    time.Duration
 	HTTPClient         *http.Client
+
+	// Deprecated: the TTL is not configurable on record.
+	TTL int
 }
 
 // NewDefaultConfig returns a default configuration for the DNSProvider.
 func NewDefaultConfig() *Config {
 	return &Config{
-		TTL:                env.GetOrDefaultInt(EnvTTL, dns01.DefaultTTL),
-		PropagationTimeout: env.GetOrDefaultSecond(EnvPropagationTimeout, 120*time.Second),
-		PollingInterval:    env.GetOrDefaultSecond(EnvPollingInterval, 5*time.Second),
+		PropagationTimeout: env.GetOrDefaultSecond(EnvPropagationTimeout, 15*time.Minute),
+		PollingInterval:    env.GetOrDefaultSecond(EnvPollingInterval, 30*time.Second),
 		HTTPClient: &http.Client{
 			Timeout: env.GetOrDefaultSecond(EnvHTTPTimeout, 10*time.Second),
 		},
@@ -117,7 +123,6 @@ func (d *DNSProvider) Present(domain, token, keyAuth string) error {
 		Hostname:    hostname,
 		RecordType:  "TXT",
 		Destination: info.Value,
-		TTL:         d.config.TTL,
 	}
 
 	zone = dns01.UnFqdn(zone)

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	vegaClient "github.com/OpenDNS/vegadns2client"
+	"github.com/go-acme/lego/v4/challenge"
 	"github.com/go-acme/lego/v4/challenge/dns01"
 	"github.com/go-acme/lego/v4/platform/config/env"
 )
@@ -24,6 +25,8 @@ const (
 	EnvPollingInterval    = envNamespace + "POLLING_INTERVAL"
 )
 
+var _ challenge.ProviderTimeout = (*DNSProvider)(nil)
+
 // Config is used to configure the creation of the DNSProvider.
 type Config struct {
 	BaseURL            string
@@ -39,7 +42,7 @@ func NewDefaultConfig() *Config {
 	return &Config{
 		TTL:                env.GetOrDefaultInt(EnvTTL, 10),
 		PropagationTimeout: env.GetOrDefaultSecond(EnvPropagationTimeout, 12*time.Minute),
-		PollingInterval:    env.GetOrDefaultSecond(EnvPollingInterval, 1*time.Minute),
+		PollingInterval:    env.GetOrDefaultSecond(EnvPollingInterval, time.Minute),
 	}
 }
 

@@ -51,6 +51,8 @@ const (
 	EnvGitHubOIDCRequestToken = "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 )
 
+var _ challenge.ProviderTimeout = (*DNSProvider)(nil)
+
 // Config is used to configure the creation of the DNSProvider.
 type Config struct {
 	ZoneName string
@@ -275,13 +277,4 @@ func getZoneName(config *Config, fqdn string) (string, error) {
 	}
 
 	return authZone, nil
-}
-
-func deref[T any](v *T) T {
-	if v == nil {
-		var zero T
-		return zero
-	}
-
-	return *v
 }

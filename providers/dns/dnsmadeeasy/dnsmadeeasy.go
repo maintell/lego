@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-acme/lego/v4/challenge"
 	"github.com/go-acme/lego/v4/challenge/dns01"
 	"github.com/go-acme/lego/v4/platform/config/env"
 	"github.com/go-acme/lego/v4/providers/dns/dnsmadeeasy/internal"
@@ -30,6 +31,8 @@ const (
 	EnvHTTPTimeout        = envNamespace + "HTTP_TIMEOUT"
 )
 
+var _ challenge.ProviderTimeout = (*DNSProvider)(nil)
+
 // Config is used to configure the creation of the DNSProvider.
 type Config struct {
 	BaseURL            string
@@ -44,15 +47,22 @@ type Config struct {
 
 // NewDefaultConfig returns a default configuration for the DNSProvider.
 func NewDefaultConfig() *Config {
+	tr := &http.Transport{}
+
+	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+	if ok {
+		tr = defaultTransport.Clone()
+	}
+
+	tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+
 	return &Config{
 		TTL:                env.GetOrDefaultInt(EnvTTL, dns01.DefaultTTL),
 		PropagationTimeout: env.GetOrDefaultSecond(EnvPropagationTimeout, dns01.DefaultPropagationTimeout),
 		PollingInterval:    env.GetOrDefaultSecond(EnvPollingInterval, dns01.DefaultPollingInterval),
 		HTTPClient: &http.Client{
-			Timeout: env.GetOrDefaultSecond(EnvHTTPTimeout, 10*time.Second),
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
+			Timeout:   env.GetOrDefaultSecond(EnvHTTPTimeout, 10*time.Second),
+			Transport: tr,
 		},
 	}
 }
